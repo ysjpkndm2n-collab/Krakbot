@@ -2546,8 +2546,7 @@ function sendStageScreen(chatId, user, carId, headline) {
     live += "⚡️ Рекорд по «" + stageDisplay(stage) + "» ещё не поставлен — этот станет первым.\n";
   }
 
-  const finishCb = isContractor(user) ? ("g_finish:" + carId) : ("finish:" + carId);
-  const kb = [[{ text: "✅ ФИНИШ этапа", callback_data: finishCb }],
+  const kb = [[{ text: "✅ ФИНИШ этапа", callback_data: "finish:" + carId }],
               [{ text: "🔄 Обновить счётчик", callback_data: "resume_stage:" + carId }],
               [{ text: "🤝 Позвать помощника", callback_data: "help:" + carId }],
               [{ text: "📸 Фото до", callback_data: "photo_before:" + carId },
@@ -3141,17 +3140,15 @@ function grantStartStage(chatId, user, carId, stageCodeStr, timeCodeStr) {
     ? "—" : timeName(timeCodeStr);
   const car = findCar(carId);
   if (!car) { send(chatId, "Машина не найдена.", backMenu()); return; }
-  // Первый этап по машине — требуем фото ДО (как у мастеров).
-  if (doneStages(carId).length === 0 && photoCount(carId, "до") < MIN_PHOTOS) {
-    photoAsk(chatId, user, carId, "до");
-    return;
-  }
   const row = car._row;
   setCell(row, A.STATUS, "в работе"); setCell(row, A.STAGE, stage);
   setCell(row, A.WORKER, user.name); setCell(row, A.START, now()); setCell(row, A.PLAN, plan);
-  setCell(row, A.TYPE, "подряд");
+  // TYPE не трогаем — там код услуги (нужен для этапов/чеклистов). Подряд помечаем в CONTRACT.
+  setCell(row, A.CONTRACT, "подряд");
   SpreadsheetApp.flush();
-  sendStageScreen(chatId, user, carId, "▶️ СТАРТ (подряд)");
+  send(chatId, "▶️ СТАРТ (подряд): " + stageDisplay(stage) + "\n🚗 " + (car[A.MODEL-1] || carId) + "\n⏱ план: " + plan +
+    "\n💰 ставка: " + g.rate + " zł\n\nКак закончишь — жми ФИНИШ.", {
+    inline_keyboard: [[{ text: "✅ ФИНИШ", callback_data: "g_finish:" + carId }]] });
 }
 function grantFinishStage(chatId, user, carId) {
   const g = grantFor(carId, user.name);
@@ -3858,7 +3855,7 @@ function handleTextInput(chatId, text, user) {
     if (!amount) { send(chatId, "Не понял сумму. Отменено.", backMenu()); return true; }
     const car = findCar(awaitCar);
     if (!car) { send(chatId, "Машина не найдена.", backMenu()); return true; }
-    setCell(car._row, A.TYPE, "подряд"); setCell(car._row, A.CONTRACT, amount);
+    setCell(car._row, A.CONTRACT, amount);
     setCell(car._row, A.STATUS, "в работе"); setCell(car._row, A.WORKER, "Виталий");
     setCell(car._row, A.STAGE, "Подряд (Виталий)"); setCell(car._row, A.START, now());
     SpreadsheetApp.flush();
@@ -4106,8 +4103,6 @@ function photoDone(chatId, user, carId, phase) {
   // Если этап уже идёт — вернуть на экран этапа; иначе — к выбору этапа.
   if (car && String(car[A.STATUS-1]).trim() === "в работе") {
     resumeStageScreen(chatId, user, carId);
-  } else if (isContractor(user)) {
-    grantChooseStage(chatId, user, carId);
   } else {
     chooseStage(chatId, user, carId);
   }
