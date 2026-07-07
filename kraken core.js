@@ -1700,6 +1700,42 @@ function stagesOverview(carId) {
 }
 
 
+// ═══════════════════ ПОДГОТОВКА 100 zł (полировка/керамика) ═══════════════════
+// Правило: у услуг полировки и керамики ПЕРВЫЙ этап («Підготовка…») стоит 100 zł
+// тому, кто его закрыл. Эта сумма вычитается из финальной выплаты того, кто
+// закрыл ПОСЛЕДНИЙ этап услуги — НО только если подготовку делал ДРУГОЙ человек
+// и закрывающий НЕ подрядчик. Если всё сделал один — не вычитается.
+const PREP_FEE = 100;
+// Код услуги считается "с подготовкой", если это полировка или керамика.
+function isPrepService(code) {
+  const c = String(code || "").trim().toUpperCase();
+  return c.indexOf("DET-POL") === 0 || c.indexOf("DET-CER") === 0;
+}
+// Ключ первого (подготовительного) этапа услуги: "КОД|Название первого этапа".
+function prepStageKey(code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!isPrepService(c) || !SERVICES[c] || !SERVICES[c].stages.length) return null;
+  return c + "|" + SERVICES[c].stages[0].stage;
+}
+// Это тот самый подготовительный этап?
+function isPrepStageKey(stageKeyStr) {
+  const p = parseStageKey(stageKeyStr);
+  const pk = prepStageKey(p.code);
+  return pk !== null && pk === String(stageKeyStr).trim();
+}
+// Кто закрыл подготовку этой услуги (имя) — из Логов. "" если ещё не закрыта.
+function prepWorkerFor(carId, code) {
+  const pk = prepStageKey(code);
+  if (!pk) return "";
+  const cid = String(carId).trim();
+  const rows = sheetValues("Логи", 11);
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][1]).trim() === cid && String(rows[i][4]).trim() === pk)
+      return String(rows[i][3]).trim();
+  }
+  return "";
+}
+
 // ═══════════════════ СТАВКИ / РАСЧЁТ ЗП ═══════════════════
 function getRates() {
   return cacheGet("__rates__", function () {
@@ -2754,14 +2790,31 @@ function doFinishStage(chatId, user, carId) {
   // Процент берётся от цены этой услуги, платится тому, кто закрыл последний этап.
   let pay = 0;
   const _p = (typeof parseStageKey === "function") ? parseStageKey(stage) : { code: "", stage: stage };
-  if (serviceLastStageDone(car, stage)) {
+  let prepNote = "";
+  // (1) ЗАКРЫТ ПОДГОТОВИТЕЛЬНЫЙ ЭТАП (полировка/керамика) → фикс 100 zł сразу тому, кто закрыл.
+  if (isPrepStageKey(stage)) {
+    pay = PREP_FEE;
+    prepNote = "подготовка " + PREP_FEE + " zł";
+  } else if (serviceLastStageDone(car, stage)) {
     pay = calcPay(user.name, stage, car);
+    // (2) ЗАКРЫТ ПОСЛЕДНИЙ ЭТАП услуги с подготовкой → вычесть 100,
+    //     если подготовку делал ДРУГОЙ человек И закрывающий НЕ подрядчик.
+    if (isPrepService(_p.code) && !isContractor(user)) {
+      const prepBy = prepWorkerFor(carId, _p.code);
+      if (prepBy && prepBy !== user.name) {
+        pay = Math.max(0, Math.round((pay - PREP_FEE) * 100) / 100);
+        prepNote = "−" + PREP_FEE + " за подготовку (" + prepBy + ")";
+      }
+    }
   }
   // деление с помощниками
   const givenToHelpers = pay > 0 ? settleHelpOnFinish(carId, stage, user.name, pay) : 0;
   const payMaster = Math.round((pay - givenToHelpers) * 100) / 100;
-  const pauseNote = (pausedMin > 0 ? "пауза " + pausedMin + " мин" : "") +
-                    (givenToHelpers > 0 ? (pausedMin > 0 ? " · " : "") + "помощникам " + givenToHelpers + " zł" : "");
+  const pauseNote = [
+      (pausedMin > 0 ? "пауза " + pausedMin + " мин" : ""),
+      (givenToHelpers > 0 ? "помощникам " + givenToHelpers + " zł" : ""),
+      prepNote
+    ].filter(Boolean).join(" · ");
   sheet("Логи").appendRow([now(), carId, car[A.PLATE-1], user.name, stage, plan, startStr, now(), factMin, payMaster, pauseNote]);
   bump("Логи");
   pay = payMaster;
